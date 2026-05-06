@@ -21,6 +21,7 @@ show_usage() {
 # Default values
 PLATFORM="macos"
 TARGET_NAME=""
+IOS_DEPLOYMENT_TARGET="17.0"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -72,24 +73,63 @@ fi
 # This separates the 'Instructions' from the 'Log Data' (stdin).
 
 if [ "$PLATFORM" = "ios" ]; then
-  PROMPT_TEXT="Below is the output of the \`xcodebuild build -scheme $TARGET_NAME -destination 'generic/platform=iOS' IPHONEOS_DEPLOYMENT_TARGET=16.0 -quiet\` command. It is too verbose and contains too much information. Please tell me what the compiler warnings are and then what the errors are. Give the error output exactly the same and then add a comment why it might be failing. We will use your output as logs. You will NOT work on these errors. We will take care of the rest."
+  PROMPT_TEXT="Below is the output of the \`xcodebuild build -scheme $TARGET_NAME -destination 'generic/platform=iOS' IPHONEOS_DEPLOYMENT_TARGET=$IOS_DEPLOYMENT_TARGET -quiet\` command. It is too verbose and contains too much information. Please tell me what the compiler warnings are and then what the errors are. Give the error output exactly the same and then add a comment why it might be failing. We will use your output as logs. You will NOT work on these errors. We will take care of the rest."
 else
   PROMPT_TEXT="Below is the output of the \`swift build --target $TARGET_NAME\` command. It is too verbose and contains too much information. Please tell me what the compiler warnings are and then what the errors are. Give the error output exactly the same and then add a comment why it might be failing. We will use your output as logs. You will NOT work on these errors. We will take care of the rest."
 fi
 
-# 2. Run Build and Pipe to Claude
-# We redirect stderr to stdout (2>&1) so Claude sees both.
+# 2. Function to analyze build output with AI tools (fallback chain)
+analyze_with_ai() {
+  local build_output="$1"
+  
+  # Try claude first
+  if command -v claude &> /dev/null; then
+    echo "Analyzing with claude..." >&2
+    if echo "$build_output" | claude -p "$PROMPT_TEXT" --allowedTools "Read" --model haiku 2>/dev/null; then
+      return 0
+    fi
+    echo "claude failed, trying codex..." >&2
+  fi
+  
+  # Try codex second
+  if command -v codex &> /dev/null; then
+    echo "Analyzing with codex..." >&2
+    if echo "$build_output" | codex -p "$PROMPT_TEXT" 2>/dev/null; then
+      return 0
+    fi
+    echo "codex failed, trying gemini..." >&2
+  fi
+  
+  # Try gemini third
+  if command -v gemini &> /dev/null; then
+    echo "Analyzing with gemini..." >&2
+    if echo "$build_output" | gemini -p "$PROMPT_TEXT" 2>/dev/null; then
+      return 0
+    fi
+    echo "gemini failed." >&2
+  fi
+  
+  # All tools failed, output raw build output
+  echo "All AI tools failed. Raw build output:" >&2
+  echo "$build_output"
+  return 1
+}
 
+# 3. Run Build and Analyze with AI (fallback chain)
 if [ "$PLATFORM" = "ios" ]; then
   defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
   
-  # Pipe xcodebuild output into claude
-  xcodebuild build -scheme "$TARGET_NAME" -destination 'generic/platform=iOS' IPHONEOS_DEPLOYMENT_TARGET=16.0 -quiet 2>&1 \
-    | claude -p "$PROMPT_TEXT" --allowedTools "Read" --model haiku
-    
+  # Capture xcodebuild output
+  BUILD_OUTPUT=$(xcodebuild build -scheme "$TARGET_NAME" -destination 'generic/platform=iOS' IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" -quiet 2>&1 || true)
+  
   defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool NO
+  
+  # Analyze with AI fallback chain
+  analyze_with_ai "$BUILD_OUTPUT"
 else
-  # Pipe swift build output into claude
-  swift build --target "$TARGET_NAME" 2>&1 \
-    | claude -p "$PROMPT_TEXT" --allowedTools "Read" --model haiku
+  # Capture swift build output
+  BUILD_OUTPUT=$(swift build --target "$TARGET_NAME" 2>&1 || true)
+  
+  # Analyze with AI fallback chain
+  analyze_with_ai "$BUILD_OUTPUT"
 fi
