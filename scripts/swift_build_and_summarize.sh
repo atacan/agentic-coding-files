@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # This script builds a Swift target, captures its output and errors,
-# and pipes the result to the 'claude' command for analysis.
+# and pipes the result to an AI command for analysis.
 
 # --- Configuration ---
 set -euo pipefail
@@ -81,29 +81,41 @@ fi
 # 2. Function to analyze build output with AI tools (fallback chain)
 analyze_with_ai() {
   local build_output="$1"
-  
-  # Try claude first
-  if command -v claude &> /dev/null; then
-    echo "Analyzing with claude..." >&2
-    if echo "$build_output" | claude -p "$PROMPT_TEXT" --allowedTools "Read" --model haiku 2>/dev/null; then
-      return 0
-    fi
-    echo "claude failed, trying codex..." >&2
-  fi
-  
-  # Try codex second
+
+  # Try codex first. Use `exec` because `codex -p` is `--profile`, not a prompt flag.
   if command -v codex &> /dev/null; then
     echo "Analyzing with codex..." >&2
-    if echo "$build_output" | codex -p "$PROMPT_TEXT" 2>/dev/null; then
+    local codex_output_file
+    if codex_output_file=$(mktemp); then
+      if printf '%s\n' "$build_output" | codex -c 'model_reasoning_effort="low"' --sandbox read-only -a never exec -o "$codex_output_file" "$PROMPT_TEXT" >/dev/null 2>/dev/null; then
+        cat "$codex_output_file"
+        rm -f "$codex_output_file"
+        return 0
+      fi
+      rm -f "$codex_output_file"
+    else
+      echo "Could not create temporary output file for codex." >&2
+    fi
+
+    if printf '%s\n' "$build_output" | codex -c 'model_reasoning_effort="low"' --sandbox read-only -a never exec "$PROMPT_TEXT" 2>/dev/null; then
       return 0
     fi
-    echo "codex failed, trying gemini..." >&2
+    echo "codex failed, trying claude..." >&2
+  fi
+
+  # Try claude second
+  if command -v claude &> /dev/null; then
+    echo "Analyzing with claude..." >&2
+    if printf '%s\n' "$build_output" | claude -p "$PROMPT_TEXT" --allowedTools "Read" --model haiku 2>/dev/null; then
+      return 0
+    fi
+    echo "claude failed, trying gemini..." >&2
   fi
   
   # Try gemini third
   if command -v gemini &> /dev/null; then
     echo "Analyzing with gemini..." >&2
-    if echo "$build_output" | gemini -p "$PROMPT_TEXT" 2>/dev/null; then
+    if printf '%s\n' "$build_output" | gemini -p "$PROMPT_TEXT" 2>/dev/null; then
       return 0
     fi
     echo "gemini failed." >&2
