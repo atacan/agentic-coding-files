@@ -6,6 +6,7 @@
 #   release_swift_package.sh --version 1.2.3
 #   release_swift_package.sh bump patch
 #   release_swift_package.sh --bump minor
+#   release_swift_package.sh --allow-non-default-branch --version 1.2.3
 
 set -euo pipefail
 
@@ -17,15 +18,22 @@ Usage:
   release_swift_package.sh bump <patch|minor|major>
   release_swift_package.sh --bump <patch|minor|major>
 
+Options:
+  --allow-non-default-branch  Allow releasing from a branch other than the
+                              GitHub default branch.
+  -h, --help                  Show this help message.
+
 Examples:
   release_swift_package.sh 1.2.3
   release_swift_package.sh v1.2.3
   release_swift_package.sh bump patch
   release_swift_package.sh --bump minor
+  release_swift_package.sh --allow-non-default-branch --version 1.2.3
 
 The script must be run inside a git repository whose root contains Package.swift.
-It creates an annotated git tag, pushes it to origin, then creates a GitHub
-release with generated release notes using the gh CLI.
+It fetches origin, requires a clean and up-to-date branch, creates an annotated
+git tag, pushes it to origin, then creates a GitHub release with generated
+release notes using the gh CLI.
 EOF
 }
 
@@ -128,8 +136,68 @@ bump_version() {
   printf '%s.%s.%s\n' "$major" "$minor" "$patch"
 }
 
+ensure_new_commits_since_tag() {
+  local previous_tag="$1"
+
+  if [ -z "$previous_tag" ]; then
+    return 0
+  fi
+
+  if ! git rev-parse -q --verify "refs/tags/$previous_tag" >/dev/null; then
+    return 0
+  fi
+
+  if ! git log --oneline "$previous_tag..HEAD" | grep -q .; then
+    die "No commits found since '$previous_tag'. Refusing to push a new release tag with duplicate contents."
+  fi
+}
+
+ensure_branch_is_releasable() {
+  local default_branch="$1"
+  local current_branch
+  local expected_upstream
+  local upstream_ref
+  local head_sha
+  local upstream_sha
+  local merge_base
+
+  current_branch=$(git symbolic-ref --quiet --short HEAD) || die "Detached HEAD is not releasable. Check out the default branch before releasing."
+
+  upstream_ref=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || die "Current branch '$current_branch' has no upstream. Set it with: git branch --set-upstream-to=origin/$current_branch"
+  expected_upstream="origin/$current_branch"
+
+  if [ "$upstream_ref" != "$expected_upstream" ]; then
+    die "Current branch '$current_branch' tracks '$upstream_ref', but releases require '$expected_upstream'."
+  fi
+
+  if [ "$ALLOW_NON_DEFAULT_BRANCH" != "true" ] && [ "$current_branch" != "$default_branch" ]; then
+    die "Current branch is '$current_branch', but GitHub default branch is '$default_branch'. Switch to '$default_branch' and pull latest changes before releasing, or pass --allow-non-default-branch."
+  fi
+
+  head_sha=$(git rev-parse HEAD)
+  upstream_sha=$(git rev-parse '@{upstream}')
+
+  if [ "$head_sha" = "$upstream_sha" ]; then
+    return 0
+  fi
+
+  merge_base=$(git merge-base HEAD '@{upstream}')
+
+  if [ "$merge_base" = "$head_sha" ]; then
+    die "Current branch '$current_branch' is behind '$upstream_ref'. Pull the latest changes before releasing."
+  fi
+
+  if [ "$merge_base" = "$upstream_sha" ]; then
+    die "Current branch '$current_branch' is ahead of '$upstream_ref'. Push or reset local commits before releasing."
+  fi
+
+  die "Current branch '$current_branch' has diverged from '$upstream_ref'. Reconcile it before releasing."
+}
+
 VERSION=""
 BUMP=""
+PREVIOUS_RELEASE_TAG=""
+ALLOW_NON_DEFAULT_BRANCH="false"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -154,6 +222,10 @@ while [ "$#" -gt 0 ]; do
       [ -z "$BUMP" ] || die "Bump was provided more than once."
       BUMP="$2"
       shift 2
+      ;;
+    --allow-non-default-branch)
+      ALLOW_NON_DEFAULT_BRANCH="true"
+      shift
       ;;
     -*)
       show_usage
@@ -199,17 +271,22 @@ fi
 git remote get-url origin >/dev/null 2>&1 || die "No git remote named 'origin' was found."
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run 'gh auth login' first."
 gh repo view >/dev/null 2>&1 || die "gh could not resolve a GitHub repository from this checkout."
+DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
+[ -n "$DEFAULT_BRANCH" ] || die "Could not determine the GitHub default branch."
 
 if [ -n "$(git status --porcelain)" ]; then
   die "Working tree is not clean. Commit, stash, or remove local changes before releasing."
 fi
 
-git fetch --tags origin >/dev/null 2>&1 || die "Could not fetch tags from origin."
+echo "Fetching origin and tags..."
+git fetch origin --tags --prune >/dev/null 2>&1 || die "Could not fetch origin and tags."
+ensure_branch_is_releasable "$DEFAULT_BRANCH"
 
 if [ -n "$BUMP" ]; then
   LATEST_INFO=$(latest_semver_tag) || die "No existing SemVer release or tag found. Create the first release with an explicit version."
   LATEST_TAG="${LATEST_INFO%% *}"
   LATEST_VERSION="${LATEST_INFO##* }"
+  PREVIOUS_RELEASE_TAG="$LATEST_TAG"
   NEXT_VERSION=$(bump_version "$LATEST_VERSION" "$BUMP")
 
   if [[ "$LATEST_TAG" == v* ]]; then
@@ -217,10 +294,18 @@ if [ -n "$BUMP" ]; then
   else
     VERSION="$NEXT_VERSION"
   fi
+else
+  if LATEST_INFO=$(latest_semver_tag); then
+    PREVIOUS_RELEASE_TAG="${LATEST_INFO%% *}"
+  fi
 fi
 
 VERSION_NUMBER=$(normalize_version "$VERSION")
 TAG_NAME="$VERSION"
+HEAD_SHORT=$(git rev-parse --short HEAD)
+CURRENT_BRANCH=$(git symbolic-ref --quiet --short HEAD)
+
+ensure_new_commits_since_tag "$PREVIOUS_RELEASE_TAG"
 
 if git rev-parse -q --verify "refs/tags/$TAG_NAME" >/dev/null; then
   die "Tag '$TAG_NAME' already exists locally."
@@ -234,7 +319,12 @@ if gh release view "$TAG_NAME" >/dev/null 2>&1; then
   die "GitHub release '$TAG_NAME' already exists."
 fi
 
-echo "Creating annotated tag $TAG_NAME at $(git rev-parse --short HEAD)..."
+echo "Releasing $TAG_NAME from $CURRENT_BRANCH at $HEAD_SHORT..."
+if [ "$ALLOW_NON_DEFAULT_BRANCH" = "true" ] && [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
+  echo "Warning: releasing from non-default branch '$CURRENT_BRANCH'. GitHub default branch is '$DEFAULT_BRANCH'." >&2
+fi
+
+echo "Creating annotated tag $TAG_NAME at $HEAD_SHORT..."
 git tag -a "$TAG_NAME" -m "Release $VERSION_NUMBER"
 
 echo "Pushing tag $TAG_NAME to origin..."
