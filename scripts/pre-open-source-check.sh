@@ -29,14 +29,14 @@ WARNINGS=0
 report_issue() {
     echo -e "${RED}❌ ISSUE: $1${NC}"
     echo -e "   $2"
-    ((ISSUES_FOUND++))
+    ISSUES_FOUND=$((ISSUES_FOUND + 1))
 }
 
 # Helper function to report warnings
 report_warning() {
     echo -e "${YELLOW}⚠️  WARNING: $1${NC}"
     echo -e "   $2"
-    ((WARNINGS++))
+    WARNINGS=$((WARNINGS + 1))
 }
 
 # Helper function to report OK
@@ -50,15 +50,36 @@ report_ok() {
 echo -e "\n${BLUE}[1] Checking for secret/credential files...${NC}"
 
 # Check for .env files
-if find . -name ".env*" -not -path "./.git/*" -not -path "./.build/*" -not -path "./node_modules/*" -not -path "./Pods/*" -not -path "./DerivedData/*" -not -path "./.swiftpm/*" 2>/dev/null | grep -q .; then
-    report_issue "Found .env files" "$(find . -name ".env*" -not -path "./.git/*" -not -path "./.build/*" -not -path "./node_modules/*" -not -path "./Pods/*" -not -path "./DerivedData/*" -not -path "./.swiftpm/*" 2>/dev/null | head -5)"
+# Skip .env.example (committable template) and files already git-ignored
+# (ignored files cannot be published, so they are warnings, not issues).
+ENV_FILES=$(find . -name ".env*" -not -path "./.git/*" -not -path "./.build/*" -not -path "./node_modules/*" -not -path "./Pods/*" -not -path "./DerivedData/*" -not -path "./.swiftpm/*" 2>/dev/null || true)
+TRACKED_ENV_FILES=""
+IGNORED_ENV_FILES=""
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if [ "$f" = "./.env.example" ]; then
+        continue
+    elif git check-ignore -q "$f" 2>/dev/null; then
+        IGNORED_ENV_FILES="${IGNORED_ENV_FILES}${f}"$'\n'
+    else
+        TRACKED_ENV_FILES="${TRACKED_ENV_FILES}${f}"$'\n'
+    fi
+done <<< "$ENV_FILES"
+
+if [ -n "$IGNORED_ENV_FILES" ]; then
+    report_warning "Found git-ignored .env files in working tree" \
+    "Not publishable via git, but verify they contain no real secrets: $(echo "$IGNORED_ENV_FILES" | head -5)"
+fi
+
+if [ -n "$TRACKED_ENV_FILES" ]; then
+    report_issue "Found non-ignored .env files" "$(echo "$TRACKED_ENV_FILES" | head -5)"
 else
-    report_ok "No .env files found"
+    report_ok "No un-ignored .env files found"
 fi
 
 # Check for secret files
-if find . -type f -name "*secret*" -not -path "./.git/*" -not -path "./.build/*" -not -path "./node_modules/*" -not -path "./Pods/*" -not -path "./DerivedData/*" -not -path "./.swiftpm/*" 2>/dev/null | grep -q .; then
-    report_issue "Found files with 'secret' in name" "$(find . -type f -name "*secret*" -not -path "./.git/*" -not -path "./.build/*" -not -path "./node_modules/*" -not -path "./Pods/*" -not -path "./DerivedData/*" -not -path "./.swiftpm/*" 2>/dev/null | head -5)"
+if find . -type f -name "*secret*" -not -path "./.git/*" -not -path "./.build/*" -not -path "./.github/*" -not -path "./node_modules/*" -not -path "./Pods/*" -not -path "./DerivedData/*" -not -path "./.swiftpm/*" 2>/dev/null | grep -q .; then
+    report_issue "Found files with 'secret' in name" "$(find . -type f -name "*secret*" -not -path "./.git/*" -not -path "./.build/*" -not -path "./.github/*" -not -path "./node_modules/*" -not -path "./Pods/*" -not -path "./DerivedData/*" -not -path "./.swiftpm/*" 2>/dev/null | head -5)"
 else
     report_ok "No files with 'secret' in name"
 fi
@@ -260,7 +281,7 @@ fi
 echo -e "\n${BLUE}[9] Checking for large binary files...${NC}"
 
 if [ -d ".git" ]; then
-    LARGE_FILES=$(find . -type f -size +10M -not -path "./.git/*" 2>/dev/null | head -5)
+    LARGE_FILES=$(find . -type f -size +10M -not -path "./.git/*" -not -path "./.build/*" -not -path "./node_modules/*" -not -path "./Pods/*" -not -path "./DerivedData/*" 2>/dev/null | head -5)
     if [ -n "$LARGE_FILES" ]; then
         report_warning "Found large files (>10MB)" "$LARGE_FILES"
     else
@@ -275,10 +296,10 @@ echo -e "\n${BLUE}[10] Checking for personal information in code...${NC}"
 
 # Check for email addresses
 if grep -rn --include="*.swift" --include="*.py" --include="*.js" --include="*.ts" --include="*.java" --include="*.go" --include="*.rb" --include="*.php" \
-    -E "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" . 2>/dev/null | grep -v "example.com" | grep -v "test.com" | grep -v "noreply" | grep -v "@users.noreply.github.com" | grep -v "package.json" | grep -v "Podfile" | head -3 | grep -q .; then
+    -E "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" . 2>/dev/null | grep -v "/.build/" | grep -v "example.com" | grep -v "test.com" | grep -v "noreply" | grep -v "@users.noreply.github.com" | grep -v "package.json" | grep -v "Podfile" | head -3 | grep -q .; then
     report_warning "Found email addresses in code" \
     "$(grep -rn --include="*.swift" --include="*.py" --include="*.js" --include="*.ts" --include="*.java" --include="*.go" --include="*.rb" --include="*.php" \
-    -E "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" . 2>/dev/null | grep -v "example.com" | grep -v "test.com" | grep -v "noreply" | grep -v "@users.noreply.github.com" | head -3)"
+    -E "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" . 2>/dev/null | grep -v "/.build/" | grep -v "example.com" | grep -v "test.com" | grep -v "noreply" | grep -v "@users.noreply.github.com" | head -3)"
 else
     report_ok "No personal email addresses found in code"
 fi
