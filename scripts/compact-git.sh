@@ -6,6 +6,11 @@ REMOTE="${REMOTE:-origin}"
 BLOBLESS="${BLOBLESS:-1}"   # 1 = also omit file blobs until Git actually needs them
 ASSUME_YES="${ASSUME_YES:-0}"
 
+# Human-readable on-disk size (not apparent file size).
+git_dir_size() {
+  du -sh "$1" 2>/dev/null | awk '{print $1}'
+}
+
 MOVED=0
 BACKUP_ROOT=""
 
@@ -84,7 +89,10 @@ fi
 printf 'Repository : %s\n' "$ROOT"
 printf 'Remote     : %s (%s)\n' "$REMOTE" "${REMOTE_URLS[0]}"
 printf 'Branch     : %s\n' "$BRANCH"
+BEFORE_GIT_SIZE="$(git_dir_size .git)"
+
 printf 'Mode       : depth=1, single branch, %s\n' "$([[ "$BLOBLESS" == 1 ]] && printf 'blobless partial clone' || printf 'full blobs for current commit')"
+printf 'Git size   : %s before compaction\n' "$BEFORE_GIT_SIZE"
 printf '\nThe working tree itself will NOT be checked out, reset --hard, cleaned, or deleted.\n'
 printf 'The old .git directory will remain as a backup until YOU remove it.\n\n'
 
@@ -138,11 +146,16 @@ git branch --set-upstream-to="$REMOTE/$BRANCH" "$BRANCH" >/dev/null
 [[ "$(git symbolic-ref --short HEAD)" == "$BRANCH" ]] || fail "HEAD is not on '$BRANCH'."
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse "$REMOTE/$BRANCH")" ]] || fail "Local HEAD does not match '$REMOTE/$BRANCH'."
 
+AFTER_GIT_SIZE="$(git_dir_size .git)"
+
 MOVED=0
 trap - ERR INT TERM
 
 printf '\nSuccess. New Git metadata is compact and tracks only %s/%s.\n' "$REMOTE" "$BRANCH"
 printf 'Original Git metadata backup:\n  %s/.git\n\n' "$BACKUP_ROOT"
+printf 'Git metadata size:\n'
+printf '  Before: %s\n' "$BEFORE_GIT_SIZE"
+printf '  After : %s\n\n' "$AFTER_GIT_SIZE"
 printf 'Current status (your pre-existing working-tree changes remain as changes):\n'
 git status --short
 printf '\nShallow: %s\n' "$(git rev-parse --is-shallow-repository)"
