@@ -40,57 +40,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Check for common secret patterns in committed content
+# 2. Scan committed content and full git history with Betterleaks
 # ---------------------------------------------------------------------------
-section "Scanning commit diffs for secret patterns..."
+section "Scanning git history with Betterleaks..."
 
-SECRET_PATTERNS=(
-  # Google API keys
-  'AIza[a-zA-Z0-9_\\-]{30,}'
-  # AWS
-  'AKIA[A-Z0-9]{16}'
-  'aws_secret_access_key\s*='
-  # GitHub tokens
-  'ghp_[a-zA-Z0-9]{36}'
-  'gho_[a-zA-Z0-9]{36}'
-  'github_pat_[a-zA-Z0-9_]{80,}'
-  # GitLab
-  'glpat-[a-zA-Z0-9_\\-]{20}'
-  # Slack
-  'xox[bporsam]-[a-zA-Z0-9\\-]+'
-  # Generic private keys
-  'BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY'
-  # Stripe
-  'sk_live_[a-zA-Z0-9]{20,}'
-  'rk_live_[a-zA-Z0-9]{20,}'
-  # OpenAI
-  'sk-[a-zA-Z0-9]{40,}'
-  # Anthropic
-  'sk-ant-[a-zA-Z0-9_\\-]{80,}'
-  # Twilio
-  'SK[a-f0-9]{32}'
-  # SendGrid
-  'SG\.[a-zA-Z0-9_\\-]{22}\.[a-zA-Z0-9_\\-]{43}'
-  # Heroku
-  '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-  # Generic password assignments
-  'password\s*=\s*["\x27][^\s]{8,}'
-  'passwd\s*=\s*["\x27][^\s]{8,}'
-  'api_key\s*=\s*["\x27][A-Za-z0-9_\\-]{16,}'
-)
-
-for pattern in "${SECRET_PATTERNS[@]}"; do
-  MATCHES=$(git log --all -p 2>/dev/null | grep -nE "^\+.*${pattern}" | head -5 || true)
-  if [[ -n "$MATCHES" ]]; then
-    echo -e "${RED}Potential match for pattern: ${pattern}${NC}"
-    echo "$MATCHES" | cut -c1-120
-    echo "  ..."
+if ! command -v betterleaks &>/dev/null; then
+  echo -e "${RED}ERROR: betterleaks is not installed.${NC}"
+  echo "Install it with: brew install betterleaks"
+  FOUND=1
+elif [[ -f .betterleaks.toml ]]; then
+  if betterleaks git . --config=.betterleaks.toml --redact --verbose --log-opts="--all --full-history"; then
+    echo -e "${GREEN}Betterleaks found no secrets in git history.${NC}"
+  else
+    echo -e "${RED}Betterleaks found potential secrets in git history.${NC}"
     FOUND=1
   fi
-done
-
-if [[ $FOUND -eq 0 ]]; then
-  echo -e "${GREEN}No secret patterns found in diffs.${NC}"
+else
+  if betterleaks git . --redact --verbose --log-opts="--all --full-history"; then
+    echo -e "${GREEN}Betterleaks found no secrets in git history.${NC}"
+  else
+    echo -e "${RED}Betterleaks found potential secrets in git history.${NC}"
+    FOUND=1
+  fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 # ==========================================
 # Secret Scanning Setup & Audit Script
-# Based on: Gitleaks + Trufflehog Tutorial
+# Based on: Betterleaks + Trufflehog Tutorial
 # ==========================================
 
 # Colors for output
@@ -29,13 +29,13 @@ echo -e "${GREEN}✓${NC} Git repository detected."
 
 TOOLS_MISSING=0
 
-if ! command -v gitleaks &> /dev/null; then
-    echo -e "${RED}✗ gitleaks is not installed.${NC}"
-    echo "  Install: brew install gitleaks"
+if ! command -v betterleaks &> /dev/null; then
+    echo -e "${RED}✗ betterleaks is not installed.${NC}"
+    echo "  Install: brew install betterleaks"
     TOOLS_MISSING=1
 else
-    GITLEAKS_VERSION=$(gitleaks version 2>&1)
-    echo -e "${GREEN}✓${NC} gitleaks found (${GITLEAKS_VERSION})"
+    BETTERLEAKS_VERSION=$(betterleaks version 2>&1)
+    echo -e "${GREEN}✓${NC} betterleaks found (${BETTERLEAKS_VERSION})"
 fi
 
 if ! command -v trufflehog &> /dev/null; then
@@ -53,23 +53,23 @@ if [ $TOOLS_MISSING -eq 1 ]; then
 fi
 
 # ==========================================
-# 2. GITLEAKS CONFIG (with exclusions)
+# 2. BETTERLEAKS CONFIG (with exclusions)
 # ==========================================
-echo -e "\n${BLUE}--- Setting up Gitleaks config ---${NC}"
+echo -e "\n${BLUE}--- Setting up Betterleaks config ---${NC}"
 
-GITLEAKS_CONFIG=".gitleaks.toml"
+BETTERLEAKS_CONFIG=".betterleaks.toml"
 
-if [ -f "$GITLEAKS_CONFIG" ]; then
-    echo "Updating existing: $GITLEAKS_CONFIG"
+if [ -f "$BETTERLEAKS_CONFIG" ]; then
+    echo "Updating existing: $BETTERLEAKS_CONFIG"
 else
-    echo "Creating new: $GITLEAKS_CONFIG"
+    echo "Creating new: $BETTERLEAKS_CONFIG"
 fi
 
-cat > "$GITLEAKS_CONFIG" <<'TOML'
-# Gitleaks configuration
-# https://github.com/gitleaks/gitleaks#configuration
+cat > "$BETTERLEAKS_CONFIG" <<'TOML'
+# Betterleaks configuration
+# https://github.com/betterleaks/betterleaks/blob/main/docs/config.md
 
-title = "Gitleaks config"
+title = "Betterleaks config"
 
 # Extend the default rules (don't replace them)
 [extend]
@@ -113,7 +113,7 @@ useDefault = true
   ]
 TOML
 
-echo -e "${GREEN}✓${NC} Gitleaks config written: $GITLEAKS_CONFIG"
+echo -e "${GREEN}✓${NC} Betterleaks config written: $BETTERLEAKS_CONFIG"
 
 # ==========================================
 # 3. TRUFFLEHOG EXCLUDE FILE
@@ -172,16 +172,16 @@ echo ""
 
 AUDIT_FAILED=0
 
-echo -e "${YELLOW}[1/2] Running Gitleaks (full history, all branches)...${NC}"
-gitleaks detect -v \
-    --config="$GITLEAKS_CONFIG" \
+echo -e "${YELLOW}[1/2] Running Betterleaks (full history, all branches)...${NC}"
+betterleaks git . --verbose --redact \
+    --config="$BETTERLEAKS_CONFIG" \
     --log-opts="--all --full-history"
-GITLEAKS_EXIT=$?
-if [ $GITLEAKS_EXIT -ne 0 ]; then
-    echo -e "${RED}  ⚠ Gitleaks found potential secrets.${NC}"
+BETTERLEAKS_EXIT=$?
+if [ $BETTERLEAKS_EXIT -ne 0 ]; then
+    echo -e "${RED}  ⚠ Betterleaks found potential secrets.${NC}"
     AUDIT_FAILED=1
 else
-    echo -e "${GREEN}  ✓ Gitleaks: clean.${NC}"
+    echo -e "${GREEN}  ✓ Betterleaks: clean.${NC}"
 fi
 
 echo ""
@@ -240,18 +240,17 @@ on:
     branches: [${DEFAULT_BRANCH}]
 
 jobs:
-  gitleaks:
+  betterleaks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+      - name: Betterleaks
+        uses: docker://ghcr.io/betterleaks/betterleaks:v1.7.2
+        with:
+          args: git . --config=.betterleaks.toml --redact --verbose --log-opts="--all --full-history"
 
   trufflehog:
     runs-on: ubuntu-latest
@@ -291,20 +290,24 @@ else
     echo "Creating new: $CONFIG_FILE"
 fi
 
+BETTERLEAKS_PATH=$(command -v betterleaks)
 TRUFFLEHOG_PATH=$(command -v trufflehog)
 
 cat > "$CONFIG_FILE" <<YAML
 repos:
   # -------------------------------------------------------
-  # Gitleaks — pattern-based secret detection
-  # Uses the official pre-commit hook from the gitleaks repo.
-  # The .gitleaks.toml config handles path exclusions.
+  # Betterleaks — configurable secret detection
+  # Uses the installed Betterleaks binary and project config.
   # -------------------------------------------------------
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.21.2
+  - repo: local
     hooks:
-      - id: gitleaks
-        args: ['--config=.gitleaks.toml']
+      - id: betterleaks
+        name: betterleaks (local)
+        language: system
+        entry: ${BETTERLEAKS_PATH} git --pre-commit --redact --staged --verbose --config=.betterleaks.toml
+        stages: [pre-commit]
+        pass_filenames: false
+        always_run: true
 
   # -------------------------------------------------------
   # Trufflehog — verification-based secret detection
@@ -353,7 +356,7 @@ fi
 
 GITIGNORE_ENTRIES=(
     "# Secret scanning reports"
-    "gitleaks-report.json"
+    "betterleaks-report.json"
     "trufflehog-report.json"
 )
 
@@ -379,7 +382,7 @@ echo -e "${GREEN}           SETUP COMPLETE               ${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "  Files created/updated:"
-echo "    • $GITLEAKS_CONFIG                   (Gitleaks exclusions)"
+echo "    • $BETTERLEAKS_CONFIG                (Betterleaks exclusions)"
 echo "    • $TRUFFLEHOG_EXCLUDE  (Trufflehog exclusions)"
 echo "    • $WORKFLOW_FILE   (GitHub Actions)"
 echo "    • $CONFIG_FILE                  (Pre-commit hooks)"
@@ -391,7 +394,7 @@ echo "    • vendor/  node_modules/  DerivedData/  build/  dist/"
 echo "    • Lock files (Package.resolved, etc.)"
 echo ""
 echo "  To add more exclusions:"
-echo "    • Gitleaks:   edit $GITLEAKS_CONFIG (paths allowlist)"
+echo "    • Betterleaks: edit $BETTERLEAKS_CONFIG (paths allowlist)"
 echo "    • Trufflehog: edit $TRUFFLEHOG_EXCLUDE (one path per line)"
 echo ""
 
@@ -400,14 +403,14 @@ if [ $AUDIT_FAILED -eq 1 ]; then
     echo "     1. Verify they are real secrets (not test fixtures)"
     echo "     2. Rotate any real exposed credentials immediately"
     echo "     3. If they are false positives, add to:"
-    echo "        • .gitleaksignore  (fingerprint-based, for gitleaks)"
+    echo "        • .betterleaksignore (fingerprint-based, for Betterleaks)"
     echo "        • $TRUFFLEHOG_EXCLUDE (path-based, for trufflehog)"
     echo ""
 fi
 
 echo "  Next steps:"
 echo "    • Review and commit the generated files:"
-echo "      git add .gitleaks.toml .trufflehog-exclude-paths.txt \\"
+echo "      git add .betterleaks.toml .trufflehog-exclude-paths.txt \\"
 echo "             .pre-commit-config.yaml .github/workflows/secret-scan.yml \\"
 echo "             .gitignore"
 echo "    • Run 'pre-commit run --all-files' to test the hooks"
